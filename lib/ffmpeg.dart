@@ -97,7 +97,7 @@ Future<void> exportVideo({
     '-preset', 'veryfast',
     '-crf', '20',
     '-c:a', 'aac',
-    '-progress', 'pipe:2',
+    '-progress', 'pipe:1', // progress on stdout keeps stderr pure for errors
     '-nostats',
     output,
   ];
@@ -105,11 +105,11 @@ Future<void> exportVideo({
   final proc = await Process.start(resolveFfmpeg(), args);
   final errBuffer = StringBuffer();
 
-  proc.stderr
+  // Progress (stdout): key=value lines, including out_time_ms=<microseconds>.
+  proc.stdout
       .transform(const SystemEncoding().decoder)
       .transform(const LineSplitter())
       .listen((line) {
-    errBuffer.writeln(line);
     if (line.startsWith('out_time_ms=')) {
       final us = int.tryParse(line.substring('out_time_ms='.length).trim());
       if (us != null) {
@@ -118,10 +118,15 @@ Future<void> exportVideo({
     }
   });
 
+  // Errors (stderr): keep the whole thing so a failure surfaces the real cause.
+  proc.stderr
+      .transform(const SystemEncoding().decoder)
+      .transform(const LineSplitter())
+      .listen(errBuffer.writeln);
+
   final code = await proc.exitCode;
   if (code != 0) {
-    final tail =
-        errBuffer.toString().split('\n').reversed.take(8).toList().reversed.join('\n');
+    final tail = errBuffer.toString().split('\n').reversed.take(20).toList().reversed.join('\n');
     throw Exception('ffmpeg exited $code\n$tail');
   }
   onProgress(1.0);
