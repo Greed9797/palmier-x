@@ -43,22 +43,14 @@ String resolveFfmpeg() {
 /// (backslashes to forward slashes, colon escaped — Windows `C:\` → `C\:/`).
 String _ffPath(String p) => p.replaceAll('\\', '/').replaceAll(':', '\\:');
 
-/// Escapes drawtext `text=` content. Single quotes are swapped for the
-/// typographic apostrophe to dodge ffmpeg's quote-within-quote rules.
-// ponytail: full single-quote escaping in drawtext is a nightmare; ’ is fine for captions.
-String _escText(String s) => s
-    .replaceAll('\\', '\\\\')
-    .replaceAll('%', '\\%')
-    .replaceAll(':', '\\:')
-    .replaceAll("'", '’')
-    .replaceAll('\n', ' ');
-
-String _drawtext(TextOverlay o, String fontPath, double trimStart) {
+String _drawtext(TextOverlay o, String fontPath, String textFile, double trimStart) {
   // -ss before -i resets output timestamps to 0, so shift enable window.
   final s = (o.start - trimStart).clamp(0.0, double.infinity);
   final e = (o.end - trimStart).clamp(0.0, double.infinity);
+  // textfile= reads UTF-8 from disk: dodges command-line arg encoding (Windows
+  // mangles multibyte chars in argv) and all drawtext text escaping.
   return "drawtext=fontfile='${_ffPath(fontPath)}'"
-      ":text='${_escText(o.text)}'"
+      ":textfile='${_ffPath(textFile)}'"
       ':fontsize=(h*${o.sizeFrac.toStringAsFixed(4)})'
       ':fontcolor=0x${o.colorHex}'
       ':x=(w*${o.cx.toStringAsFixed(4)}-text_w/2)'
@@ -84,15 +76,25 @@ Future<void> exportVideo({
   final active =
       overlays.where((o) => o.end > start && o.start < end).toList();
 
+  // Each caption's text goes to a UTF-8 file (referenced via textfile=).
+  Directory? textDir;
+  final filters = <String>[];
+  if (active.isNotEmpty) {
+    textDir = await Directory.systemTemp.createTemp('palmierx_cap');
+    final sep = Platform.pathSeparator;
+    for (var i = 0; i < active.length; i++) {
+      final path = '${textDir.path}${sep}cap$i.txt';
+      await File(path).writeAsString(active[i].text, flush: true); // UTF-8
+      filters.add(_drawtext(active[i], fontPath, path, start));
+    }
+  }
+
   final args = <String>[
     '-y',
     '-ss', start.toStringAsFixed(3),
     '-to', end.toStringAsFixed(3),
     '-i', input,
-    if (active.isNotEmpty) ...[
-      '-vf',
-      active.map((o) => _drawtext(o, fontPath, start)).join(','),
-    ],
+    if (filters.isNotEmpty) ...['-vf', filters.join(',')],
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-crf', '20',
@@ -124,10 +126,14 @@ Future<void> exportVideo({
       .transform(const LineSplitter())
       .listen(errBuffer.writeln);
 
-  final code = await proc.exitCode;
-  if (code != 0) {
-    final tail = errBuffer.toString().split('\n').reversed.take(20).toList().reversed.join('\n');
-    throw Exception('ffmpeg exited $code\n$tail');
+  try {
+    final code = await proc.exitCode;
+    if (code != 0) {
+      final tail = errBuffer.toString().split('\n').reversed.take(20).toList().reversed.join('\n');
+      throw Exception('ffmpeg exited $code\n$tail');
+    }
+    onProgress(1.0);
+  } finally {
+    await textDir?.delete(recursive: true);
   }
-  onProgress(1.0);
 }
