@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 
+import 'caption.dart';
+import 'caption_panel.dart';
 import 'ffmpeg.dart';
 import 'timeline.dart';
 
@@ -28,6 +32,8 @@ class _EditorScreenState extends State<EditorScreen> {
   double _trimOut = 0;
   bool _exporting = false;
   double _exportProgress = 0;
+  int _captionSeq = 0;
+  List<Caption> _captions = const [];
 
   @override
   void initState() {
@@ -65,13 +71,45 @@ class _EditorScreenState extends State<EditorScreen> {
       _position = 0;
       _trimIn = 0;
       _trimOut = 0;
+      _captions = const [];
     });
     await _player.open(Media(path), play: false);
   }
 
-  void _seek(double sec) {
-    _player.seek(Duration(milliseconds: (sec * 1000).round()));
+  void _seek(double sec) =>
+      _player.seek(Duration(milliseconds: (sec * 1000).round()));
+
+  // ---- Caption CRUD ----------------------------------------------------------
+
+  void _addCaption() {
+    final start = _position;
+    final end = (start + 2.0).clamp(0.0, _duration == 0 ? start + 2.0 : _duration);
+    setState(() {
+      _captions = [
+        ..._captions,
+        Caption(id: 'c${_captionSeq++}', text: 'Legenda', start: start, end: end),
+      ];
+    });
   }
+
+  void _updateCaption(Caption c) => setState(() {
+        _captions = [
+          for (final x in _captions) if (x.id == c.id) c else x,
+        ];
+      });
+
+  void _deleteCaption(String id) =>
+      setState(() => _captions = _captions.where((c) => c.id != id).toList());
+
+  Future<String> _ensureFont() async {
+    final bytes = await rootBundle.load('assets/fonts/DejaVuSans.ttf');
+    final dir = await Directory.systemTemp.createTemp('palmierx_font');
+    final f = File(p.join(dir.path, 'DejaVuSans.ttf'));
+    await f.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+    return f.path;
+  }
+
+  // ---- Export ----------------------------------------------------------------
 
   Future<void> _export() async {
     if (_path == null) return;
@@ -88,11 +126,25 @@ class _EditorScreenState extends State<EditorScreen> {
       _exportProgress = 0;
     });
     try {
-      await exportTrim(
+      final fontPath = await _ensureFont();
+      await exportVideo(
         input: _path!,
         output: outPath,
         start: _trimIn,
         end: _trimOut,
+        fontPath: fontPath,
+        overlays: [
+          for (final c in _captions)
+            TextOverlay(
+              text: c.text,
+              start: c.start,
+              end: c.end,
+              cx: c.cx,
+              cy: c.cy,
+              sizeFrac: c.sizeFrac,
+              colorHex: c.color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2),
+            ),
+        ],
         onProgress: (v) => setState(() => _exportProgress = v),
       );
       if (mounted) _snack('Exportado: ${p.basename(outPath)}');
@@ -109,6 +161,8 @@ class _EditorScreenState extends State<EditorScreen> {
       backgroundColor: error ? Colors.red.shade900 : null,
     ));
   }
+
+  // ---- UI --------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -133,47 +187,65 @@ class _EditorScreenState extends State<EditorScreen> {
           const SizedBox(width: 12),
         ],
       ),
-      body: Column(
+      body: Row(
         children: [
           Expanded(
-            child: Container(
-              color: Colors.black,
-              child: hasVideo
-                  ? Video(controller: _controller)
-                  : const _EmptyState(),
+            child: Column(
+              children: [
+                Expanded(
+                  child: Container(
+                    color: Colors.black,
+                    child: hasVideo
+                        ? _Preview(
+                            controller: _controller,
+                            captions: _captions,
+                            position: _position,
+                          )
+                        : const _EmptyState(),
+                  ),
+                ),
+                if (_exporting) LinearProgressIndicator(value: _exportProgress),
+                if (hasVideo)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            IconButton(
+                              onPressed: () => _player.playOrPause(),
+                              icon: const Icon(Icons.play_arrow),
+                            ),
+                            Text(_fmt(_position)),
+                            const Spacer(),
+                            Text('Trim ${_fmt(_trimIn)} → ${_fmt(_trimOut)}'),
+                          ],
+                        ),
+                        Timeline(
+                          duration: _duration,
+                          position: _position,
+                          trimIn: _trimIn,
+                          trimOut: _trimOut,
+                          onSeek: _seek,
+                          onTrimIn: (s) =>
+                              setState(() => _trimIn = s.clamp(0.0, _trimOut)),
+                          onTrimOut: (s) => setState(
+                              () => _trimOut = s.clamp(_trimIn, _duration)),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
-          if (_exporting)
-            LinearProgressIndicator(value: _exportProgress),
           if (hasVideo)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      IconButton(
-                        onPressed: () => _player.playOrPause(),
-                        icon: const Icon(Icons.play_arrow),
-                      ),
-                      Text(_fmt(_position)),
-                      const Spacer(),
-                      Text('Trim ${_fmt(_trimIn)} → ${_fmt(_trimOut)}'),
-                    ],
-                  ),
-                  Timeline(
-                    duration: _duration,
-                    position: _position,
-                    trimIn: _trimIn,
-                    trimOut: _trimOut,
-                    onSeek: _seek,
-                    onTrimIn: (s) => setState(
-                        () => _trimIn = s.clamp(0.0, _trimOut)),
-                    onTrimOut: (s) => setState(
-                        () => _trimOut = s.clamp(_trimIn, _duration)),
-                  ),
-                ],
-              ),
+            CaptionPanel(
+              captions: _captions,
+              duration: _duration,
+              onAdd: _addCaption,
+              onUpdate: _updateCaption,
+              onDelete: _deleteCaption,
+              onSeek: _seek,
             ),
         ],
       ),
@@ -184,6 +256,60 @@ class _EditorScreenState extends State<EditorScreen> {
     final m = (sec ~/ 60).toString().padLeft(2, '0');
     final s = (sec % 60).toStringAsFixed(1).padLeft(4, '0');
     return '$m:$s';
+  }
+}
+
+/// Video with caption overlays positioned at fractional coordinates. Positions
+/// are relative to the player box (letterboxing not accounted for in v1).
+class _Preview extends StatelessWidget {
+  const _Preview({
+    required this.controller,
+    required this.captions,
+    required this.position,
+  });
+  final VideoController controller;
+  final List<Caption> captions;
+  final double position;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final h = c.maxHeight;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Video(controller: controller),
+            for (final cap in captions)
+              if (cap.visibleAt(position))
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: cap.cy * h - cap.sizeFrac * h,
+                  child: IgnorePointer(
+                    child: Align(
+                      alignment: Alignment(2 * cap.cx - 1, 0),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        color: Colors.black.withValues(alpha: 0.45),
+                        child: Text(
+                          cap.text,
+                          style: TextStyle(
+                            fontFamily: 'DejaVuSans',
+                            color: cap.color,
+                            fontSize: cap.sizeFrac * h,
+                            height: 1.1,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+          ],
+        );
+      },
+    );
   }
 }
 
