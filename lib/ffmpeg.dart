@@ -43,20 +43,64 @@ String resolveFfmpeg() {
 /// (backslashes to forward slashes, colon escaped — Windows `C:\` → `C\:/`).
 String _ffPath(String p) => p.replaceAll('\\', '/').replaceAll(':', '\\:');
 
-String _drawtext(TextOverlay o, String fontPath, String textFile, double trimStart) {
-  // -ss before -i resets output timestamps to 0, so shift enable window.
-  final s = (o.start - trimStart).clamp(0.0, double.infinity);
-  final e = (o.end - trimStart).clamp(0.0, double.infinity);
-  // textfile= reads UTF-8 from disk: dodges command-line arg encoding (Windows
-  // mangles multibyte chars in argv) and all drawtext text escaping.
-  return "drawtext=fontfile='${_ffPath(fontPath)}'"
-      ":textfile='${_ffPath(textFile)}'"
-      ':fontsize=(h*${o.sizeFrac.toStringAsFixed(4)})'
-      ':fontcolor=0x${o.colorHex}'
-      ':x=(w*${o.cx.toStringAsFixed(4)}-text_w/2)'
-      ':y=(h*${o.cy.toStringAsFixed(4)}-text_h/2)'
-      ':box=1:boxcolor=black@0.45:boxborderw=12'
-      ":enable='between(t,${s.toStringAsFixed(3)},${e.toStringAsFixed(3)})'";
+// Nominal ASS canvas; libass scales fractional positions to the real frame.
+const _assResX = 1280;
+const _assResY = 720;
+
+/// ASS time: H:MM:SS.cc (centiseconds).
+String _assTime(double sec) {
+  final s = sec < 0 ? 0.0 : sec;
+  final h = s ~/ 3600;
+  final m = (s ~/ 60) % 60;
+  final ss = (s % 60);
+  final cs = ((ss - ss.truncate()) * 100).round();
+  return '$h:${m.toString().padLeft(2, '0')}:${ss.truncate().toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
+}
+
+/// RRGGBB → ASS &HAABBGGRR (BGR, alpha 00 = opaque).
+String _assColor(String rrggbb) {
+  final r = rrggbb.substring(0, 2);
+  final g = rrggbb.substring(2, 4);
+  final b = rrggbb.substring(4, 6);
+  return '&H00$b$g$r';
+}
+
+/// Inline-block text: ASS uses {..} for override tags, \N for newlines.
+// ponytail: captions with literal braces are vanishingly rare; neutralise them.
+String _assText(String s) =>
+    s.replaceAll('\\', '\\\\').replaceAll('{', '(').replaceAll('}', ')').replaceAll('\n', r'\N');
+
+/// Builds an ASS subtitle document burning every overlay (times relative to the
+/// trimmed output). Geometry/size are fractional → positioned in the nominal
+/// canvas; libass scales to the real video. Style box (BorderStyle 3) matches
+/// the preview's caption background.
+String _buildAss(List<TextOverlay> active, double trimStart) {
+  final events = active.map((o) {
+    final start = _assTime(o.start - trimStart);
+    final end = _assTime(o.end - trimStart);
+    final fs = (o.sizeFrac * _assResY).round();
+    final x = (o.cx * _assResX).round();
+    final y = (o.cy * _assResY).round();
+    final tags = '{\\an5\\pos($x,$y)\\fs$fs\\1c${_assColor(o.colorHex)}}';
+    return 'Dialogue: 0,$start,$end,Default,,0,0,0,,$tags${_assText(o.text)}';
+  }).join('\n');
+
+  return '''
+[Script Info]
+ScriptType: v4.00+
+PlayResX: $_assResX
+PlayResY: $_assResY
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,48,&H00FFFFFF,&H000000FF,&H73000000,&H73000000,0,0,0,0,100,100,0,0,3,8,0,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+$events
+''';
 }
 
 /// Trims [input] to [start]..[end] (seconds), burns [overlays], re-encodes to
@@ -76,17 +120,16 @@ Future<void> exportVideo({
   final active =
       overlays.where((o) => o.end > start && o.start < end).toList();
 
-  // Each caption's text goes to a UTF-8 file (referenced via textfile=).
-  Directory? textDir;
-  final filters = <String>[];
+  // Captions are burned through libass: write an .ass file and render it with
+  // the subtitles filter. fontsdir points libass at the bundled DejaVu Sans.
+  Directory? subDir;
+  String? vf;
   if (active.isNotEmpty) {
-    textDir = await Directory.systemTemp.createTemp('palmierx_cap');
-    final sep = Platform.pathSeparator;
-    for (var i = 0; i < active.length; i++) {
-      final path = '${textDir.path}${sep}cap$i.txt';
-      await File(path).writeAsString(active[i].text, flush: true); // UTF-8
-      filters.add(_drawtext(active[i], fontPath, path, start));
-    }
+    subDir = await Directory.systemTemp.createTemp('palmierx_cap');
+    final assPath = '${subDir.path}${Platform.pathSeparator}subs.ass';
+    await File(assPath).writeAsString(_buildAss(active, start), flush: true);
+    final fontsDir = File(fontPath).parent.path;
+    vf = "subtitles='${_ffPath(assPath)}':fontsdir='${_ffPath(fontsDir)}'";
   }
 
   final args = <String>[
@@ -94,7 +137,7 @@ Future<void> exportVideo({
     '-ss', start.toStringAsFixed(3),
     '-to', end.toStringAsFixed(3),
     '-i', input,
-    if (filters.isNotEmpty) ...['-vf', filters.join(',')],
+    if (vf != null) ...['-vf', vf],
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-crf', '20',
@@ -134,6 +177,6 @@ Future<void> exportVideo({
     }
     onProgress(1.0);
   } finally {
-    await textDir?.delete(recursive: true);
+    await subDir?.delete(recursive: true);
   }
 }
