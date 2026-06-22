@@ -63,6 +63,9 @@ jobs:
           Write-Host "Booted OK: PID $($p.Id) alive after 12s (Flutter engine + libmpv loaded, window created)"
           Stop-Process -Id $p.Id -Force
 
+      - name: Integration test — libmpv decodes a video on Windows
+        run: flutter test integration_test -d windows
+
       - name: Zip release
         shell: pwsh
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath PalmierX-windows.zip
