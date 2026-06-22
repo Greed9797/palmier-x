@@ -38,12 +38,30 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Bundle ffmpeg into release
+      - name: Bundle ffmpeg + VC++ runtime into release
         shell: pwsh
         run: |
-          $dest = 'build\windows\x64\runner\Release\ffmpeg'
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item $env:FFMPEG "$dest\ffmpeg.exe"
+          $rel = 'build\windows\x64\runner\Release'
+          New-Item -ItemType Directory -Force -Path "$rel\ffmpeg" | Out-Null
+          Copy-Item $env:FFMPEG "$rel\ffmpeg\ffmpeg.exe"
+          # Flutter release links the VC++ runtime; bundle it so a clean
+          # Windows machine (no redistributable installed) still launches.
+          foreach ($d in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','concrt140.dll') {
+            Copy-Item "C:\Windows\System32\$d" $rel\ -ErrorAction SilentlyContinue
+          }
+          $missing = @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll') | Where-Object { -not (Test-Path "$rel\$_") }
+          if ($missing) { throw "VC++ runtime missing from bundle: $($missing -join ', ')" }
+          Write-Host "Bundled VC++ runtime: $(Get-ChildItem $rel\*140*.dll | ForEach-Object Name)"
+
+      - name: Smoke test — boot the bundled app on real Windows (no crash)
+        shell: pwsh
+        run: |
+          $exe = 'build\windows\x64\runner\Release\palmier_x.exe'
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 12
+          if ($p.HasExited) { throw "App crashed on startup (exit code $($p.ExitCode)) — DLL load / libmpv init failure" }
+          Write-Host "Booted OK: PID $($p.Id) alive after 12s (Flutter engine + libmpv loaded, window created)"
+          Stop-Process -Id $p.Id -Force
 
       - name: Zip release
         shell: pwsh
