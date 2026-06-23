@@ -48,6 +48,8 @@ jobs:
           $rel = 'build\windows\x64\runner\Release'
           New-Item -ItemType Directory -Force -Path "$rel\ffmpeg" | Out-Null
           Copy-Item $env:FFMPEG "$rel\ffmpeg\ffmpeg.exe"
+          # ffprobe powers the Omni engine's media probe — ship it next to ffmpeg.
+          Copy-Item $env:FFPROBE "$rel\ffmpeg\ffprobe.exe"
           # Flutter release links the VC++ runtime; bundle it so a clean
           # Windows machine (no redistributable installed) still launches.
           foreach ($d in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','concrt140.dll') {

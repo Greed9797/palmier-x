@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'caption.dart';
 import 'caption_panel.dart';
 import 'ffmpeg.dart';
+import 'omni/omni.dart';
 import 'timeline.dart';
 
 class EditorScreen extends StatefulWidget {
@@ -34,6 +35,13 @@ class _EditorScreenState extends State<EditorScreen> {
   double _exportProgress = 0;
   int _captionSeq = 0;
   List<Caption> _captions = const [];
+
+  // ---- Omni engine state ----
+  OmniResult? _omni;
+  bool _analyzing = false;
+  double _analyzeProgress = 0;
+  String? _analyzeStage;
+  Object? _omniError;
 
   @override
   void initState() {
@@ -72,12 +80,69 @@ class _EditorScreenState extends State<EditorScreen> {
       _trimIn = 0;
       _trimOut = 0;
       _captions = const [];
+      _omni = null;
+      _omniError = null;
     });
     await _player.open(Media(path), play: false);
   }
 
   void _seek(double sec) =>
       _player.seek(Duration(milliseconds: (sec * 1000).round()));
+
+  // ---- Omni ------------------------------------------------------------------
+
+  Future<void> _runOmni() async {
+    if (_path == null) return;
+    setState(() {
+      _analyzing = true;
+      _analyzeProgress = 0;
+      _analyzeStage = null;
+      _omniError = null;
+    });
+    try {
+      final r = await OmniEngine.run(
+        input: _path!,
+        onProgress: (stage, f) {
+          if (!mounted) return;
+          setState(() {
+            _analyzeStage = stage;
+            _analyzeProgress = f;
+          });
+        },
+      );
+      if (mounted) setState(() => _omni = r);
+    } catch (e) {
+      if (mounted) setState(() => _omniError = e);
+    } finally {
+      if (mounted) setState(() => _analyzing = false);
+    }
+  }
+
+  void _applyTrim(CutSuggestion s) {
+    setState(() {
+      _trimIn = s.start.clamp(0.0, _duration);
+      _trimOut = s.end.clamp(_trimIn, _duration);
+    });
+    _seek(s.start);
+  }
+
+  void _addCaptionFromSuggestion(CutSuggestion s) {
+    final text = s.suggestedCaption;
+    if (text == null) return;
+    setState(() {
+      _captions = [
+        ..._captions,
+        Caption(id: 'c${_captionSeq++}', text: text, start: s.start, end: s.end),
+      ];
+    });
+  }
+
+  Future<void> _openOmniSettings() async {
+    await showDialog<bool>(
+      context: context,
+      builder: (_) => const OmniSettingsDialog(),
+    );
+  }
 
   // ---- Caption CRUD ----------------------------------------------------------
 
@@ -245,6 +310,19 @@ class _EditorScreenState extends State<EditorScreen> {
               onAdd: _addCaption,
               onUpdate: _updateCaption,
               onDelete: _deleteCaption,
+              onSeek: _seek,
+            ),
+          if (hasVideo)
+            OmniPanel(
+              result: _omni,
+              analyzing: _analyzing,
+              progress: _analyzeProgress,
+              stage: _analyzeStage,
+              error: _omniError,
+              onRun: _runOmni,
+              onOpenSettings: _openOmniSettings,
+              onApplyTrim: _applyTrim,
+              onAddCaption: _addCaptionFromSuggestion,
               onSeek: _seek,
             ),
         ],

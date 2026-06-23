@@ -46,7 +46,10 @@ jobs:
           APP="build/macos/Build/Products/Release/palmier_x.app"
           cp "$FFMPEG" "$APP/Contents/MacOS/ffmpeg"
           chmod +x "$APP/Contents/MacOS/ffmpeg"
-          # Ad-hoc re-sign so the bundled binary is allowed inside the app.
+          # ffprobe powers the Omni engine's media probe — ship it too.
+          cp "$FFPROBE" "$APP/Contents/MacOS/ffprobe"
+          chmod +x "$APP/Contents/MacOS/ffprobe"
+          # Ad-hoc re-sign so the bundled binaries are allowed inside the app.
           codesign --force --deep --sign - "$APP" || true
 
       - name: Smoke test — boot the bundled app on macOS (no crash)
