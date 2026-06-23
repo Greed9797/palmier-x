@@ -1,7 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:palmier_x/ffmpeg.dart' show resolveFfmpeg;
+import 'package:palmier_x/ffmpeg.dart' show resolveFfmpeg, ExportAspect;
+import 'package:palmier_x/omni/highlight_exporter.dart';
+import 'package:palmier_x/omni/models/cut_suggestion.dart';
 import 'package:palmier_x/omni/models/video_analysis.dart';
 import 'package:palmier_x/omni/pipeline/cut_planner.dart';
 import 'package:palmier_x/omni/pipeline/frame_sampler.dart';
@@ -102,6 +104,29 @@ Here are the moments:
       expect(c.start, lessThan(c.end));
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('exportHighlights writes one reframed clip per suggestion', () async {
+    final outDir = '${tmp.path}/clips';
+    await Directory(outDir).create();
+    final n = await exportHighlights(
+      input: src,
+      suggestions: const [
+        CutSuggestion(id: 'a', start: 0.5, end: 2.0, reason: 'x', score: 0.9, kind: CutKind.highlight),
+        CutSuggestion(id: 'b', start: 3.0, end: 4.5, reason: 'y', score: 0.6, kind: CutKind.highlight),
+      ],
+      transcript: const [], // no captions → no drawtext needed locally
+      aspect: ExportAspect.r9x16,
+      fontPath: 'assets/fonts/DejaVuSans.ttf',
+      outDir: outDir,
+      baseName: 'src',
+      onProgress: (_, _) {},
+    );
+    expect(n, 2);
+    final files = Directory(outDir).listSync().whereType<File>().toList();
+    expect(files.length, 2);
+    expect(files.any((f) => f.path.endsWith('src_01_90.mp4')), true);
+    expect(files.any((f) => f.path.endsWith('src_02_60.mp4')), true);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // Real CLI smoke — opt-in (OMNI_CLI_TEST=1) so we don't spawn `claude` on every run.
   test('claude CLI produces suggestions (opt-in)', () async {

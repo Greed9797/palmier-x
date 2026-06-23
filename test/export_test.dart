@@ -54,6 +54,25 @@ void main() {
     expect(await probeDuration(out), closeTo(2.0, 0.3));
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  test('exportVideo reframes to 9:16 portrait', () async {
+    final out = '${tmp.path}/vert.mp4';
+    await exportVideo(
+      input: src,
+      output: out,
+      start: 0.0,
+      end: 3.0,
+      fontPath: 'assets/fonts/DejaVuSans.ttf',
+      aspect: ExportAspect.r9x16,
+      onProgress: (_) {},
+    );
+    final probe = await Process.run(ffprobe, [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height',
+      '-of', 'csv=p=0:s=x', out,
+    ]);
+    expect('${probe.stdout}'.trim(), '1080x1920');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('exportVideo burns a caption without breaking the file', () async {
     if (!await hasDrawtext()) {
       markTestSkipped('ffmpeg built without drawtext (no libfreetype)');

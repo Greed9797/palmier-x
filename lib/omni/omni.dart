@@ -5,6 +5,7 @@ export 'models/analysis_result.dart';
 export 'models/cut_suggestion.dart';
 export 'models/edit_recipe.dart';
 export 'models/video_analysis.dart';
+export 'highlight_exporter.dart';
 export 'omni_engine.dart';
 export 'pipeline/analysis_pipeline.dart' show OmniProgress;
 export 'providers/provider_kind.dart';

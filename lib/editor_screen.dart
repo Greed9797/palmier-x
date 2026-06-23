@@ -35,6 +35,7 @@ class _EditorScreenState extends State<EditorScreen> {
   double _exportProgress = 0;
   int _captionSeq = 0;
   List<Caption> _captions = const [];
+  ExportAspect _aspect = ExportAspect.r9x16; // viral default
 
   // ---- Omni engine state ----
   OmniResult? _omni;
@@ -144,6 +145,55 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  void _autoCaption() {
+    final transcript = _omni?.analysis.transcript ?? const [];
+    if (transcript.isEmpty) {
+      _snack('Sem transcript — rode o Omni com um backend de transcrição.', error: true);
+      return;
+    }
+    setState(() {
+      _captions = [
+        ..._captions,
+        for (final seg in transcript)
+          Caption(id: 'c${_captionSeq++}', text: seg.text, start: seg.start, end: seg.end),
+      ];
+    });
+    _snack('${transcript.length} legendas geradas do transcript.');
+  }
+
+  Future<void> _exportHighlights() async {
+    final r = _omni;
+    if (_path == null || r == null || r.suggestions.isEmpty) return;
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Pasta para os clipes de destaque',
+    );
+    if (dir == null) return;
+
+    setState(() {
+      _exporting = true;
+      _exportProgress = 0;
+    });
+    try {
+      final fontPath = await _ensureFont();
+      final n = await exportHighlights(
+        input: _path!,
+        suggestions: r.suggestions,
+        transcript: r.analysis.transcript,
+        aspect: _aspect,
+        fontPath: fontPath,
+        outDir: dir,
+        baseName: p.basenameWithoutExtension(_path!),
+        onProgress: (done, total) =>
+            setState(() => _exportProgress = total == 0 ? 1 : done / total),
+      );
+      if (mounted) _snack('$n clipes exportados em ${p.basename(dir)}/');
+    } catch (e) {
+      if (mounted) _snack('Falha no export de destaques: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
   // ---- Caption CRUD ----------------------------------------------------------
 
   void _addCaption() {
@@ -198,6 +248,7 @@ class _EditorScreenState extends State<EditorScreen> {
         start: _trimIn,
         end: _trimOut,
         fontPath: fontPath,
+        aspect: _aspect,
         overlays: [
           for (final c in _captions)
             TextOverlay(
@@ -236,6 +287,22 @@ class _EditorScreenState extends State<EditorScreen> {
       appBar: AppBar(
         title: const Text('Palmier X'),
         actions: [
+          if (hasVideo)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: DropdownButton<ExportAspect>(
+                value: _aspect,
+                underline: const SizedBox.shrink(),
+                icon: const Icon(Icons.aspect_ratio, size: 18),
+                items: [
+                  for (final a in ExportAspect.values)
+                    DropdownMenuItem(value: a, child: Text(a.label)),
+                ],
+                onChanged: _exporting
+                    ? null
+                    : (a) => setState(() => _aspect = a ?? _aspect),
+              ),
+            ),
           TextButton.icon(
             onPressed: _exporting ? null : _import,
             icon: const Icon(Icons.video_file_outlined),
@@ -324,6 +391,8 @@ class _EditorScreenState extends State<EditorScreen> {
               onApplyTrim: _applyTrim,
               onAddCaption: _addCaptionFromSuggestion,
               onSeek: _seek,
+              onAutoCaption: _autoCaption,
+              onExportHighlights: _exportHighlights,
             ),
         ],
       ),

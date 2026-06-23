@@ -43,6 +43,32 @@ String resolveFfmpeg() {
 /// (backslashes to forward slashes, colon escaped — Windows `C:\` → `C\:/`).
 String _ffPath(String p) => p.replaceAll('\\', '/').replaceAll(':', '\\:');
 
+/// Output framing for social/viral delivery. Crops the source centre to the
+/// target ratio, then scales to a standard size (even dims, SAR 1).
+enum ExportAspect { original, r9x16, r1x1, r4x5, r16x9 }
+
+/// ffmpeg filter that centre-crops to [arW]:[arH] then scales to [outW]x[outH].
+String _cropScale(int arW, int arH, int outW, int outH) =>
+    "crop='min(iw,ih*$arW/$arH)':'min(ih,iw*$arH/$arW)',scale=$outW:$outH,setsar=1";
+
+String? _aspectFilter(ExportAspect a) => switch (a) {
+      ExportAspect.original => null,
+      ExportAspect.r9x16 => _cropScale(9, 16, 1080, 1920),
+      ExportAspect.r1x1 => _cropScale(1, 1, 1080, 1080),
+      ExportAspect.r4x5 => _cropScale(4, 5, 1080, 1350),
+      ExportAspect.r16x9 => _cropScale(16, 9, 1920, 1080),
+    };
+
+extension ExportAspectX on ExportAspect {
+  String get label => switch (this) {
+        ExportAspect.original => 'Original',
+        ExportAspect.r9x16 => '9:16 (Reels/TikTok)',
+        ExportAspect.r1x1 => '1:1 (Feed)',
+        ExportAspect.r4x5 => '4:5 (Feed alto)',
+        ExportAspect.r16x9 => '16:9 (YouTube)',
+      };
+}
+
 // Nominal ASS canvas; libass scales fractional positions to the real frame.
 const _assResX = 1280;
 const _assResY = 720;
@@ -112,6 +138,7 @@ Future<void> exportVideo({
   required double end,
   required String fontPath,
   List<TextOverlay> overlays = const [],
+  ExportAspect aspect = ExportAspect.original,
   required void Function(double progress) onProgress,
 }) async {
   final duration = (end - start).clamp(0.001, double.infinity);
@@ -120,16 +147,19 @@ Future<void> exportVideo({
   final active =
       overlays.where((o) => o.end > start && o.start < end).toList();
 
-  // Captions are burned through libass: write an .ass file and render it with
-  // the subtitles filter. fontsdir points libass at the bundled DejaVu Sans.
+  // Filter chain: reframe (crop+scale) first, then burn captions on top so
+  // libass renders at output resolution. fractional caption geometry maps
+  // correctly regardless of the ASS nominal PlayRes.
   Directory? subDir;
-  String? vf;
+  final filters = <String>[];
+  final aspectF = _aspectFilter(aspect);
+  if (aspectF != null) filters.add(aspectF);
   if (active.isNotEmpty) {
     subDir = await Directory.systemTemp.createTemp('palmierx_cap');
     final assPath = '${subDir.path}${Platform.pathSeparator}subs.ass';
     await File(assPath).writeAsString(_buildAss(active, start), flush: true);
     final fontsDir = File(fontPath).parent.path;
-    vf = "subtitles='${_ffPath(assPath)}':fontsdir='${_ffPath(fontsDir)}'";
+    filters.add("subtitles='${_ffPath(assPath)}':fontsdir='${_ffPath(fontsDir)}'");
   }
 
   final args = <String>[
@@ -137,11 +167,13 @@ Future<void> exportVideo({
     '-ss', start.toStringAsFixed(3),
     '-to', end.toStringAsFixed(3),
     '-i', input,
-    if (vf != null) ...['-vf', vf],
+    if (filters.isNotEmpty) ...['-vf', filters.join(',')],
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-crf', '20',
+    '-pix_fmt', 'yuv420p', // broad web/mobile compatibility
     '-c:a', 'aac',
+    '-movflags', '+faststart', // streamable: moov atom up front
     '-progress', 'pipe:1', // progress on stdout keeps stderr pure for errors
     '-nostats',
     output,

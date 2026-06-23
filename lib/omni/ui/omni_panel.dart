@@ -19,6 +19,8 @@ class OmniPanel extends StatelessWidget {
     required this.onApplyTrim,
     required this.onAddCaption,
     required this.onSeek,
+    required this.onAutoCaption,
+    required this.onExportHighlights,
   });
 
   final OmniResult? result;
@@ -31,6 +33,8 @@ class OmniPanel extends StatelessWidget {
   final void Function(CutSuggestion) onApplyTrim;
   final void Function(CutSuggestion) onAddCaption;
   final void Function(double) onSeek;
+  final VoidCallback onAutoCaption;
+  final VoidCallback onExportHighlights;
 
   @override
   Widget build(BuildContext context) {
@@ -116,10 +120,31 @@ class OmniPanel extends StatelessWidget {
         ),
       );
     }
+    final hasTranscript = r.analysis.transcriptSource != null;
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
         _recipeCard(r),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: hasTranscript ? onAutoCaption : null,
+                icon: const Icon(Icons.subtitles_outlined, size: 16),
+                label: const Text('Auto-legenda'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: r.suggestions.isEmpty ? null : onExportHighlights,
+                icon: const Icon(Icons.download, size: 16),
+                label: const Text('Destaques'),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 12),
         if (r.analysis.transcriptSource == null)
           Padding(
